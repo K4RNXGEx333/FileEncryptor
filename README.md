@@ -10,5 +10,5 @@ DO NOT SAVE backup in the same folder you want to encrpyt
 
 I am not responsible for any lost of files
 
-#Misc
+# Misc
 Got any ideas or want me to make it look better LMK
