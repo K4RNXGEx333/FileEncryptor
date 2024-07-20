@@ -72,6 +72,7 @@ namespace FileEncryptor
             }
         }
 
+
         private void EncryptFolder(string folderPath, string password)
         {
             var files = Directory.GetFiles(folderPath);
@@ -94,14 +95,25 @@ namespace FileEncryptor
 
         private void EncryptFile(string filePath, string password)
         {
-            byte[] bytesToBeEncrypted = File.ReadAllBytes(filePath);
-            byte[] passwordBytes = Encoding.UTF8.GetBytes(password);
+            byte[] passwordBytes = Array.Empty<byte>();
+            byte[] bytesEncrypted = Array.Empty<byte>();
 
-            passwordBytes = SHA256.Create().ComputeHash(passwordBytes);
+            try
+            {
+                byte[] bytesToBeEncrypted = File.ReadAllBytes(filePath);
+                passwordBytes = Encoding.UTF8.GetBytes(password);
+                passwordBytes = SHA256.Create().ComputeHash(passwordBytes);
 
-            byte[] bytesEncrypted = AES_Encrypt(bytesToBeEncrypted, passwordBytes);
-
-            File.WriteAllBytes(filePath, bytesEncrypted);
+                bytesEncrypted = AES_Encrypt(bytesToBeEncrypted, passwordBytes);
+                File.WriteAllBytes(filePath, bytesEncrypted);
+            }
+            finally
+            {
+                if (passwordBytes != null)
+                    Array.Clear(passwordBytes, 0, passwordBytes.Length);
+                if (bytesEncrypted != null)
+                    Array.Clear(bytesEncrypted, 0, bytesEncrypted.Length);
+            }
         }
 
         private void DecryptFile(string filePath, string password)
