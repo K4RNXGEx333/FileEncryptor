@@ -1,6 +1,5 @@
-// Made and programmed by K4rnxge
-
 using System;
+using System.Data.SqlTypes;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security;
@@ -12,6 +11,8 @@ namespace FileEncryptor
 {
     public partial class File_Encryptor : Form
     {
+        private static readonly byte[] saltBytes = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+
         public File_Encryptor()
         {
             InitializeComponent();
@@ -97,7 +98,7 @@ namespace FileEncryptor
                 SecureString securePassword = ConvertToSecureString(password);
 
                 // Verify integrity for all files in the folder
-                var files = Directory.GetFiles(folderPath);
+                var files = Directory.GetFiles(folderPath, "*.txt");
                 bool allFilesValid = true;
 
                 foreach (var file in files)
@@ -134,7 +135,7 @@ namespace FileEncryptor
 
         private void DecryptFolder(string folderPath, string password)
         {
-            var files = Directory.GetFiles(folderPath);
+            var files = Directory.GetFiles(folderPath, "*.txt");
 
             foreach (var file in files)
             {
@@ -149,6 +150,9 @@ namespace FileEncryptor
 
             try
             {
+                // Compute file hash before encryption
+                string hashBeforeEncryption = ComputeFileHash(filePath);
+
                 byte[] bytesToBeEncrypted = File.ReadAllBytes(filePath);
                 IntPtr passwordBSTR = Marshal.SecureStringToBSTR(password);
                 passwordBytes = Encoding.UTF8.GetBytes(Marshal.PtrToStringBSTR(passwordBSTR));
@@ -157,6 +161,16 @@ namespace FileEncryptor
 
                 bytesEncrypted = AES_Encrypt(bytesToBeEncrypted, passwordBytes);
                 File.WriteAllBytes(filePath, bytesEncrypted);
+
+                // Save hash alongside the encrypted file
+                File.WriteAllText(filePath + ".hash", hashBeforeEncryption);
+
+                // Set the file as read-only
+                File.SetAttributes(filePath, File.GetAttributes(filePath) | FileAttributes.ReadOnly);
+            }
+            catch (CryptographicException ex)
+            {
+                MessageBox.Show($"Encryption error: {ex.Message}");
             }
             finally
             {
@@ -169,14 +183,56 @@ namespace FileEncryptor
 
         private void DecryptFile(string filePath, string password)
         {
-            byte[] bytesToBeDecrypted = File.ReadAllBytes(filePath);
             byte[] passwordBytes = Encoding.UTF8.GetBytes(password);
+            byte[] bytesDecrypted = Array.Empty<byte>();
 
-            passwordBytes = SHA256.Create().ComputeHash(passwordBytes);
+            try
+            {
+                // Remove read-only attribute
+                File.SetAttributes(filePath, File.GetAttributes(filePath) & ~FileAttributes.ReadOnly);
 
-            byte[] bytesDecrypted = AES_Decrypt(bytesToBeDecrypted, passwordBytes);
+                // Read encrypted bytes
+                byte[] bytesToBeDecrypted = File.ReadAllBytes(filePath);
+                passwordBytes = SHA256.Create().ComputeHash(passwordBytes);
 
-            File.WriteAllBytes(filePath, bytesDecrypted);
+                // Decrypt bytes
+                bytesDecrypted = AES_Decrypt(bytesToBeDecrypted, passwordBytes);
+
+                // Write decrypted bytes to a temporary file
+                string tempFilePath = filePath + ".temp";
+                File.WriteAllBytes(tempFilePath, bytesDecrypted);
+
+                // Replace original file with the decrypted file
+                File.Replace(tempFilePath, filePath, null);
+
+                // Verify file integrity
+                string hashFilePath = filePath + ".hash";
+                if (File.Exists(hashFilePath))
+                {
+                    string originalHash = File.ReadAllText(hashFilePath);
+                    string hashAfterDecryption = ComputeFileHash(filePath);
+
+                    if (originalHash != hashAfterDecryption)
+                    {
+                        MessageBox.Show($"File integrity check failed for: {filePath}");
+                    }
+                    else
+                    {
+                        File.Delete(hashFilePath); // Remove hash file if the integrity is valid
+                    }
+                }
+            }
+            catch (CryptographicException ex)
+            {
+                MessageBox.Show($"Decryption error: {ex.Message}");
+            }
+            finally
+            {
+                if (passwordBytes != null)
+                    Array.Clear(passwordBytes, 0, passwordBytes.Length);
+                if (bytesDecrypted != null)
+                    Array.Clear(bytesDecrypted, 0, bytesDecrypted.Length);
+            }
         }
 
         private SecureString ConvertToSecureString(string password)
@@ -229,28 +285,27 @@ namespace FileEncryptor
 
         private byte[] AES_Encrypt(byte[] bytesToBeEncrypted, byte[] passwordBytes)
         {
-            byte[] encryptedBytes = Array.Empty<byte>();
+            byte[] encryptedBytes;
 
-            byte[] saltBytes = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
-
-            using (MemoryStream ms = new MemoryStream())
+            using (var aes = Aes.Create())
             {
-                using (Aes AES = Aes.Create())
+                var key = new Rfc2898DeriveBytes(passwordBytes, saltBytes, 10000, HashAlgorithmName.SHA256);
+
+                aes.Key = key.GetBytes(32);
+                aes.IV = key.GetBytes(16);
+
+                using (var encryptor = aes.CreateEncryptor(aes.Key, aes.IV))
                 {
-                    var key = new Rfc2898DeriveBytes(passwordBytes, saltBytes, 10000, HashAlgorithmName.SHA256);
-
-                    AES.KeySize = 256;
-                    AES.BlockSize = 128;
-                    AES.Key = key.GetBytes(AES.KeySize / 8);
-                    AES.IV = key.GetBytes(AES.BlockSize / 8);
-                    AES.Mode = CipherMode.CFB;
-
-                    using (var cs = new CryptoStream(ms, AES.CreateEncryptor(), CryptoStreamMode.Write))
+                    using (var ms = new MemoryStream())
                     {
-                        cs.Write(bytesToBeEncrypted, 0, bytesToBeEncrypted.Length);
-                        cs.Close();
+                        using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
+                        {
+                            cs.Write(bytesToBeEncrypted, 0, bytesToBeEncrypted.Length);
+                            cs.FlushFinalBlock();
+                        }
+
+                        encryptedBytes = ms.ToArray();
                     }
-                    encryptedBytes = ms.ToArray();
                 }
             }
 
@@ -259,34 +314,44 @@ namespace FileEncryptor
 
         private byte[] AES_Decrypt(byte[] bytesToBeDecrypted, byte[] passwordBytes)
         {
-            byte[] decryptedBytes = Array.Empty<byte>();
+            byte[] decryptedBytes;
 
-            byte[] saltBytes = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
-
-            using (MemoryStream ms = new MemoryStream())
+            using (var aes = Aes.Create())
             {
-                using (Aes AES = Aes.Create())
+                var key = new Rfc2898DeriveBytes(passwordBytes, saltBytes, 10000, HashAlgorithmName.SHA256);
+
+                aes.Key = key.GetBytes(32);
+                aes.IV = key.GetBytes(16);
+
+                using (var decryptor = aes.CreateDecryptor(aes.Key, aes.IV))
                 {
-                    var key = new Rfc2898DeriveBytes(passwordBytes, saltBytes, 10000, HashAlgorithmName.SHA256);
-
-                    AES.KeySize = 256;
-                    AES.BlockSize = 128;
-                    AES.Key = key.GetBytes(AES.KeySize / 8);
-                    AES.IV = key.GetBytes(AES.BlockSize / 8);
-                    AES.Mode = CipherMode.CFB;
-
-                    using (var cs = new CryptoStream(ms, AES.CreateDecryptor(), CryptoStreamMode.Write))
+                    using (var ms = new MemoryStream(bytesToBeDecrypted))
                     {
-                        cs.Write(bytesToBeDecrypted, 0, bytesToBeDecrypted.Length);
-                        cs.Close();
+                        using (var cs = new CryptoStream(ms, decryptor, CryptoStreamMode.Read))
+                        {
+                            using (var sr = new MemoryStream())
+                            {
+                                cs.CopyTo(sr);
+                                decryptedBytes = sr.ToArray();
+                            }
+                        }
                     }
-                    decryptedBytes = ms.ToArray();
                 }
             }
 
             return decryptedBytes;
         }
+
+        private string ComputeFileHash(string filePath)
+        {
+            using (var sha256 = SHA256.Create())
+            {
+                using (var stream = File.OpenRead(filePath))
+                {
+                    byte[] hashBytes = sha256.ComputeHash(stream);
+                    return BitConverter.ToString(hashBytes).Replace("-", "").ToLower();
+                }
+            }
+        }
     }
 }
-
-// Made and programmed by K4rnxge
