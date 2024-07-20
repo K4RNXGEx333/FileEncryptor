@@ -1,7 +1,9 @@
-﻿// Made and programmed by K4rnxge
+// Made and programmed by K4rnxge
 
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Security;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
@@ -10,7 +12,6 @@ namespace FileEncryptor
 {
     public partial class File_Encryptor : Form
     {
-
         public File_Encryptor()
         {
             InitializeComponent();
@@ -30,6 +31,13 @@ namespace FileEncryptor
         {
             string folderPath = txtFolderPath.Text;
             string password = txtPassword.Text;
+            string confirmPassword = txtConfirmPassword.Text;
+
+            if (password != confirmPassword)
+            {
+                MessageBox.Show("Passwords do not match");
+                return;
+            }
 
             if (Directory.Exists(folderPath) && !string.IsNullOrEmpty(password))
             {
@@ -63,8 +71,15 @@ namespace FileEncryptor
 
             if (Directory.Exists(folderPath) && !string.IsNullOrEmpty(password))
             {
-                DecryptFolder(folderPath, password);
-                MessageBox.Show("Files decrypted successfully.");
+                try
+                {
+                    DecryptFolder(folderPath, password);
+                    MessageBox.Show("Files decrypted successfully.");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"An error occurred: {ex.Message}");
+                }
             }
             else
             {
@@ -72,14 +87,48 @@ namespace FileEncryptor
             }
         }
 
+        private void btnVerifyIntegrity_Click(object sender, EventArgs e)
+        {
+            string folderPath = txtFolderPath.Text;
+            string password = txtPassword.Text;
+
+            if (Directory.Exists(folderPath) && !string.IsNullOrEmpty(password))
+            {
+                SecureString securePassword = ConvertToSecureString(password);
+
+                // Verify integrity for all files in the folder
+                var files = Directory.GetFiles(folderPath);
+                bool allFilesValid = true;
+
+                foreach (var file in files)
+                {
+                    if (!VerifyFileIntegrity(file, securePassword))
+                    {
+                        allFilesValid = false;
+                        MessageBox.Show($"File integrity verification failed for: {file}");
+                        break;
+                    }
+                }
+
+                if (allFilesValid)
+                {
+                    MessageBox.Show("All files' integrity verified successfully.");
+                }
+            }
+            else
+            {
+                MessageBox.Show("Please select a valid folder and enter a password.");
+            }
+        }
 
         private void EncryptFolder(string folderPath, string password)
         {
-            var files = Directory.GetFiles(folderPath);
+            var files = Directory.GetFiles(folderPath, "*.txt");
+            SecureString securePassword = ConvertToSecureString(password);
 
             foreach (var file in files)
             {
-                EncryptFile(file, password);
+                EncryptFile(file, securePassword);
             }
         }
 
@@ -93,7 +142,7 @@ namespace FileEncryptor
             }
         }
 
-        private void EncryptFile(string filePath, string password)
+        private void EncryptFile(string filePath, SecureString password)
         {
             byte[] passwordBytes = Array.Empty<byte>();
             byte[] bytesEncrypted = Array.Empty<byte>();
@@ -101,7 +150,9 @@ namespace FileEncryptor
             try
             {
                 byte[] bytesToBeEncrypted = File.ReadAllBytes(filePath);
-                passwordBytes = Encoding.UTF8.GetBytes(password);
+                IntPtr passwordBSTR = Marshal.SecureStringToBSTR(password);
+                passwordBytes = Encoding.UTF8.GetBytes(Marshal.PtrToStringBSTR(passwordBSTR));
+                Marshal.ZeroFreeBSTR(passwordBSTR);
                 passwordBytes = SHA256.Create().ComputeHash(passwordBytes);
 
                 bytesEncrypted = AES_Encrypt(bytesToBeEncrypted, passwordBytes);
@@ -126,6 +177,49 @@ namespace FileEncryptor
             byte[] bytesDecrypted = AES_Decrypt(bytesToBeDecrypted, passwordBytes);
 
             File.WriteAllBytes(filePath, bytesDecrypted);
+        }
+
+        private SecureString ConvertToSecureString(string password)
+        {
+            if (password == null)
+                throw new ArgumentNullException(nameof(password));
+
+            var securePassword = new SecureString();
+            foreach (char c in password)
+                securePassword.AppendChar(c);
+
+            securePassword.MakeReadOnly();
+            return securePassword;
+        }
+
+        private bool VerifyFileIntegrity(string filePath, SecureString password)
+        {
+            byte[] passwordBytes = Array.Empty<byte>();
+            byte[] bytesDecrypted = Array.Empty<byte>();
+
+            try
+            {
+                byte[] bytesToBeDecrypted = File.ReadAllBytes(filePath);
+
+                IntPtr passwordBSTR = Marshal.SecureStringToBSTR(password);
+                passwordBytes = Encoding.UTF8.GetBytes(Marshal.PtrToStringBSTR(passwordBSTR));
+                Marshal.ZeroFreeBSTR(passwordBSTR);
+                passwordBytes = SHA256.Create().ComputeHash(passwordBytes);
+
+                bytesDecrypted = AES_Decrypt(bytesToBeDecrypted, passwordBytes);
+                return true;
+            }
+            catch (CryptographicException)
+            {
+                return false; // Return false if decryption fails
+            }
+            finally
+            {
+                if (passwordBytes != null)
+                    Array.Clear(passwordBytes, 0, passwordBytes.Length);
+                if (bytesDecrypted != null)
+                    Array.Clear(bytesDecrypted, 0, bytesDecrypted.Length);
+            }
         }
 
         private void CreateBackupFile(string backupFilePath, string password)
