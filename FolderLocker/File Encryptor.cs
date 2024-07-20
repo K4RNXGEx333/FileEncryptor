@@ -1,11 +1,7 @@
-using System;
-using System.Data.SqlTypes;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Security.Cryptography;
 using System.Text;
-using System.Windows.Forms;
 
 namespace FileEncryptor
 {
